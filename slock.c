@@ -42,6 +42,7 @@ enum {
 	INPUT,
 	FAILED,
   CAPS,
+  TEXT,
 	NUMCOLS
 };
 
@@ -110,7 +111,17 @@ dontkillme(void)
 }
 #endif
 
-
+static int
+readescapedint(const char *str, int *i) {
+	int n = 0;
+	if (str[*i])
+		++*i;
+	while(str[*i] && str[*i] != ';' && str[*i] != 'm') {
+		n = 10 * n + str[*i] - '0';
+		++*i;
+	}
+	return n;
+}
 
 static void
 writemessage(Display *dpy, Window win, int screen)
@@ -123,7 +134,7 @@ writemessage(Display *dpy, Window win, int screen)
 	XineramaScreenInfo *xsi;
 	xftdraw = XftDrawCreate(dpy, win, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen));
 	fontinfo = XftFontOpenName(dpy, screen, font_name);
-	XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), text_color, &xftcolor);
+	XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), colorname[TEXT], &xftcolor);
 
 	if (fontinfo == NULL) {
 		if (count_error == 0) {
@@ -134,7 +145,7 @@ writemessage(Display *dpy, Window win, int screen)
 	}
 
 	XftTextExtentsUtf8(dpy, fontinfo, (XftChar8 *) " ", 1, &ext_space);
-	tab_size = 8 * ext_space.width;
+	tab_size = 2 * ext_space.width;
 
 	/*  To prevent "Uninitialized" warnings. */
 	xsi = NULL;
