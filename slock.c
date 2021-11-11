@@ -13,17 +13,26 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/types.h>
+#include <fontconfig/fontconfig.h>
 #include <X11/extensions/Xrandr.h>
+#include <X11/extensions/Xinerama.h>
 #include <X11/keysym.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
+#include <X11/Xft/Xft.h>
 
 #include "arg.h"
 #include "util.h"
 
 char *argv0;
+
+static time_t locktime;
+
+/* global count to prevent repeated error messages */
+int count_error = 0;
 
 enum {
 	INIT,
@@ -63,23 +72,55 @@ die(const char *errstr, ...)
 #include <linux/oom.h>
 
 static void
+dontkillme(void)
+{
+	FILE *f;
+	const char oomfile[] = "/proc/self/oom_score_adj";
+
+	if (!(f = fopen(oomfile, "w"))) {
+		if (errno == ENOENT)
+			return;
+		die("slock: fopen %s: %s\n", oomfile, strerror(errno));
+	}
+	fprintf(f, "%d", OOM_SCORE_ADJ_MIN);
+	if (fclose(f)) {
+		if (errno == EACCES)
+			die("slock: unable to disable OOM killer. "
+			    "Make sure to suid or sgid slock.\n");
+		else
+			die("slock: fclose %s: %s\n", oomfile, strerror(errno));
+	}
+}
+#endif
+
+
+
+static void
 writemessage(Display *dpy, Window win, int screen)
 {
-	int len, line_len, width, height, i, j, k, tab_replace, tab_size;
-	XGCValues gr_values;
-	XFontStruct *fontinfo;
-	XColor color, dummy;
-	GC gc;
-	fontinfo = XLoadQueryFont(dpy, text_size);
-	tab_size = 8 * XTextWidth(fontinfo, " ", 1);
+	int len, line_len, width, height, s_width, s_height, i, j, k, tab_replace, tab_size;
+	XftFont *fontinfo;
+	XftColor xftcolor;
+	XftDraw *xftdraw;
+	XGlyphInfo ext_msg, ext_space;
+	XineramaScreenInfo *xsi;
+	xftdraw = XftDrawCreate(dpy, win, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen));
+	fontinfo = XftFontOpenName(dpy, screen, font_name);
+	XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), text_color, &xftcolor);
 
-	XAllocNamedColor(dpy, DefaultColormap(dpy, screen),
-			 text_color, &color, &dummy);
+	if (fontinfo == NULL) {
+		if (count_error == 0) {
+			fprintf(stderr, "slock: Unable to load font \"%s\"\n", font_name);
+			count_error++;
+		}
+		return;
+	}
 
-	gr_values.font = fontinfo->fid;
-	gr_values.foreground = color.pixel;
-	gc=XCreateGC(dpy,win,GCFont+GCForeground, &gr_values);
+	XftTextExtentsUtf8(dpy, fontinfo, (XftChar8 *) " ", 1, &ext_space);
+	tab_size = 8 * ext_space.width;
 
+	/*  To prevent "Uninitialized" warnings. */
+	xsi = NULL;
 
 	/*
 	 * Start formatting and drawing text
@@ -103,8 +144,18 @@ writemessage(Display *dpy, Window win, int screen)
 	if (line_len == 0)
 		line_len = len;
 
-	height = DisplayHeight(dpy, screen)*3/7 - (k*20)/3;
-	width  = (DisplayWidth(dpy, screen) - XTextWidth(fontinfo, message, line_len))/2;
+	if (XineramaIsActive(dpy)) {
+		xsi = XineramaQueryScreens(dpy, &i);
+		s_width = xsi[0].width;
+		s_height = xsi[0].height;
+	} else {
+		s_width = DisplayWidth(dpy, screen);
+		s_height = DisplayHeight(dpy, screen);
+	}
+
+	XftTextExtentsUtf8(dpy, fontinfo, (XftChar8 *)message, line_len, &ext_msg);
+	height = s_height*3/7 - (k*20)/3;
+	width  = (s_width - ext_msg.width)/2;
 
 	/* Look for '\n' and print the text between them. */
 	for (i = j = k = 0; i <= len; i++) {
@@ -116,7 +167,7 @@ writemessage(Display *dpy, Window win, int screen)
 				j++;
 			}
 
-			XDrawString(dpy, win, gc, width + tab_size*tab_replace, height + 20*k, message + j, i - j);
+			XftDrawStringUtf8(xftdraw, &xftcolor, fontinfo, width + tab_size*tab_replace, height + 20*k, (XftChar8 *)(message + j), i - j);
 			while (i < len && message[i] == '\n') {
 				i++;
 				j = i;
@@ -124,31 +175,15 @@ writemessage(Display *dpy, Window win, int screen)
 			}
 		}
 	}
+
+	/* xsi should not be NULL anyway if Xinerama is active, but to be safe */
+	if (XineramaIsActive(dpy) && xsi != NULL)
+			XFree(xsi);
+
+	XftFontClose(dpy, fontinfo);
+	XftColorFree(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), &xftcolor);
+	XftDrawDestroy(xftdraw);
 }
-
-
-static void
-dontkillme(void)
-{
-	FILE *f;
-	const char oomfile[] = "/proc/self/oom_score_adj";
-
-	if (!(f = fopen(oomfile, "w"))) {
-		if (errno == ENOENT)
-			return;
-		die("slock: fopen %s: %s\n", oomfile, strerror(errno));
-	}
-	fprintf(f, "%d", OOM_SCORE_ADJ_MIN);
-	if (fclose(f)) {
-		if (errno == EACCES)
-			die("slock: unable to disable OOM killer. "
-			    "Make sure to suid or sgid slock.\n");
-		else
-			die("slock: fclose %s: %s\n", oomfile, strerror(errno));
-	}
-}
-#endif
-
 static const char *
 gethash(void)
 {
@@ -207,6 +242,7 @@ readpw(Display *dpy, struct xrandr *rr, struct lock **locks, int nscreens,
 	oldc = INIT;
 
 	while (running && !XNextEvent(dpy, &ev)) {
+		running = !((time(NULL) - locktime < timetocancel) && (ev.type == MotionNotify));
 		if (ev.type == KeyPress) {
 			explicit_bzero(&buf, sizeof(buf));
 			num = XLookupString(&ev.xkey, buf, sizeof(buf), &ksym, 0);
@@ -260,7 +296,7 @@ readpw(Display *dpy, struct xrandr *rr, struct lock **locks, int nscreens,
 					                     locks[screen]->win,
 					                     locks[screen]->colors[color]);
 					XClearWindow(dpy, locks[screen]->win);
-					writemessage(dpy, locks[screen]->win, screen);
+          writemessage(dpy, locks[screen]->win, screen);
 				}
 				oldc = color;
 			}
@@ -335,6 +371,7 @@ lockscreen(Display *dpy, struct xrandr *rr, int screen)
 				XRRSelectInput(dpy, lock->win, RRScreenChangeNotifyMask);
 
 			XSelectInput(dpy, lock->root, SubstructureNotifyMask);
+      locktime = time(NULL);
 			unsigned int opacity = (unsigned int)(alpha * 0xffffffff);
 			XChangeProperty(dpy, lock->win, XInternAtom(dpy, "_NET_WM_WINDOW_OPACITY", False), XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&opacity, 1L);
 			XSync(dpy, False);
@@ -365,6 +402,7 @@ usage(void)
 	die("usage: slock [-v] [-m message] [cmd [arg ...]]\n");
 }
 
+
 int
 main(int argc, char **argv) {
 	struct xrandr rr;
@@ -381,9 +419,9 @@ main(int argc, char **argv) {
 	case 'v':
 		fprintf(stderr, "slock-"VERSION"\n");
 		return 0;
-	case 'm':
-		message = EARGF(usage());
-		break;
+    case 'm':
+        message = EARGF(usage());
+        break;
 	default:
 		usage();
 	} ARGEND
@@ -421,6 +459,7 @@ main(int argc, char **argv) {
 		die("slock: setuid: %s\n", strerror(errno));
 
 	/* check for Xrandr support */
+	/* check for Xrandr support */
 	rr.active = XRRQueryExtension(dpy, &rr.evbase, &rr.errbase);
 
 	/* get number of screens in display "dpy" and blank them */
@@ -432,10 +471,11 @@ main(int argc, char **argv) {
 			writemessage(dpy, locks[s]->win, s);
 			nlocks++;
 		} else {
-			break;
-		}
+      break;
+    }
 	}
 	XSync(dpy, 0);
+
 
 	/* did we manage to lock everything? */
 	if (nlocks != nscreens)
