@@ -30,9 +30,9 @@ make clean install
 
 ## Patches
 
-+ [alpha]() : for transprency (blur).
-+ [xft + message]() : for fonts
-+ [quick cancel]() :
++ alpha : for transprency (blur).
++ xft + message : for fonts
++ [quick cancel](https://tools.suckless.org/slock/patches/quickcancel/) :
 + [xresources](https://tools.suckless.org/slock/patches/xresources/) : XResources loading.
 + [caps](https://tools.suckless.org/slock/patches/capscolor/) : for CAPS colouring.
 
